@@ -1,8 +1,9 @@
 # Product Requirements Document
 ## Web Crawler & Real-Time Search Engine
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Date:** 2026-03-16  
+**Language:** Python 3.11+ (stdlib only)  
 **Status:** Phase 1 — Approved for Design
 
 ---
@@ -36,12 +37,12 @@ Build a functional, concurrent web crawler ("Indexer") and a real-time search en
 | F-I-01 | **Seed URL input** | Accept one or more seed URLs from the user at startup via CLI or config file. |
 | F-I-02 | **Recursive crawling to depth k** | BFS/DFS traversal starting at the seed; crawl every outgoing hyperlink up to depth *k* (user-configurable, default = 3). |
 | F-I-03 | **Uniqueness / Visited set** | Maintain a thread-safe "Visited" set. A URL that has already been fetched must **never** be re-fetched, regardless of how many other pages link to it. |
-| F-I-04 | **Link extraction** | Parse `<a href="...">` tags using language-native HTML parsing (Python `html.parser` / Go `golang.org/x/net/html`). Resolve relative URLs to absolute form before enqueueing. |
-| F-I-05 | **Content indexing** | For each crawled page, store: `url`, `origin_url` (the page that linked to it), `depth`, `title`, `raw_text` (visible body text), `timestamp`. |
+| F-I-04 | **Link extraction** | Parse `<a href="...">` tags using `html.HTMLParser` (stdlib). Resolve relative URLs to absolute via `urllib.parse.urljoin` before enqueueing. |
+| F-I-05 | **Content indexing** | For each crawled page, store: `url`, `origin_url` (the page that linked to it), `depth`, `title`, `text` (visible body text), `indexed_at`. |
 | F-I-06 | **Error tolerance** | Non-2xx responses, timeouts, and malformed HTML must be logged and skipped gracefully; they must not halt the crawler. |
-| F-I-07 | **Configurable concurrency** | User can set the maximum number of concurrent workers (goroutines / threads) via CLI flag `--workers N` (default = 10). |
-| F-I-08 | **Back-pressure / throttling** | The work queue (channel / bounded queue) must have a configurable maximum depth. When the queue is full, producers block rather than spawning unbounded goroutines. Rate limiting (requests/second per domain) is enforced to avoid hammering hosts. |
-| F-I-09 | **Language-native HTTP** | Use `net/http` (Go) or `urllib` (Python) only. Third-party HTTP clients (requests, httpx, etc.) are **not** permitted. |
+| F-I-07 | **Configurable concurrency** | User can set the maximum number of concurrent worker threads via `--workers N` (default = 10). |
+| F-I-08 | **Back-pressure / throttling** | `queue.Queue(maxsize=M)` — when the queue is full, `put(block=True)` blocks naturally. Rate limiting (req/sec per domain) via `time.sleep()` prevents hammering hosts. |
+| F-I-09 | **Language-native HTTP** | Use `urllib.request` only. Third-party HTTP clients (`requests`, `httpx`, etc.) are **not** permitted. |
 
 ### 2.2 Searcher (Query Engine)
 
@@ -79,7 +80,7 @@ Build a functional, concurrent web crawler ("Indexer") and a real-time search en
 └──────────────┬──────────────────────────────────────┘
                │ spawns
        ┌───────▼────────┐
-       │  Worker Pool   │  N goroutines / threads
+       │  Worker Pool   │  N daemon Threads
        │  (bounded, N)  │
        └───────┬────────┘
                │ fetch → parse → enqueue children
@@ -100,55 +101,51 @@ Build a functional, concurrent web crawler ("Indexer") and a real-time search en
        └───────────────┘
 ```
 
-**Language recommendation:** Go — channels and goroutines are a natural fit. Python with `threading` + `queue.Queue` is an acceptable alternative.
+**Language:** Python 3.11+ — `threading` + `queue.Queue` maps 1:1 with this design. The GIL is not a constraint because crawling is entirely I/O-bound; threads release the GIL during every `urllib` network call.
 
 ### 3.2 Data Structures
 
 #### PageRecord (in-memory index entry)
-```
-PageRecord {
-    url        string    // normalized absolute URL
-    origin_url string    // parent URL that discovered this page
-    depth      int       // crawl depth from seed (0 = seed)
-    title      string    // <title> tag content
-    text       string    // visible body text (whitespace-collapsed)
-    indexed_at time.Time // UTC timestamp of crawl
-}
+```python
+@dataclass
+class PageRecord:
+    url:        str
+    origin_url: str      # parent URL ("" for seed)
+    depth:      int      # 0 = seed
+    title:      str
+    text:       str      # visible body text
+    indexed_at: datetime
 ```
 
 #### Visited Set
-- **Go:** `sync.Map` or `map[string]bool` protected by `sync.Mutex`.
-- **Python:** `set` protected by `threading.Lock`.
+`threading.Lock` + `set[str]` — `try_mark(url)` is atomic (check-and-insert under one lock acquisition).
 
 #### Work Queue
-- **Go:** Buffered channel `chan WorkItem` with capacity *M*.
-- **Python:** `queue.Queue(maxsize=M)`.
+`queue.Queue(maxsize=M)` — thread-safe; `put(block=True)` provides natural back-pressure.
 
 #### Shared Index
-- **Go:** `sync.RWMutex` + `map[string]PageRecord` — readers use `RLock()`, writers use `Lock()`.
-- **Python:** `threading.RLock` + `dict`.
+`threading.RLock` + `dict[str, PageRecord]` — all reads and writes go through `Index` class methods; lock held only during dict access.
 
 ### 3.3 Back-Pressure Strategy
 
 Two complementary mechanisms:
 
-1. **Bounded Queue** — The work queue has a fixed maximum size *M* (default = 500). When a worker tries to enqueue a newly-discovered URL and the queue is full, the enqueue operation **blocks** (channel send / `Queue.put(block=True)`) until a slot becomes free. This provides natural back-pressure without busy-waiting.
+1. **Bounded Queue** — `queue.Queue(maxsize=M)` (default M = 500). When a worker calls `work_q.put(block=True)` and the queue is full, the call **blocks** until a slot is free. Natural back-pressure with no extra code.
 
-2. **Per-Domain Rate Limiter** — Each domain is allowed at most *R* requests per second (default R = 2). A `time.Ticker` (Go) or `threading.Event` + `time.sleep` (Python) gate ensures compliance. This prevents hammering a single host and getting IP-blocked.
+2. **Per-Domain Rate Limiter** — Each domain is allowed at most *R* requests per second (default R = 2). A `time.sleep()` gate inside the worker enforces compliance, preventing hammering a single host.
 
 ### 3.4 Relevancy Heuristic
 
 Score for a query *Q* against a PageRecord *P*:
 
+```python
+tokens     = query_str.lower().split()
+title_hits = sum(t in record.title.lower() for t in tokens)
+body_hits  = sum(t in record.text.lower()  for t in tokens)
+score      = 2 * title_hits + body_hits
 ```
-score(P, Q) = (2 × title_hits) + (1 × body_hits)
 
-where:
-  title_hits = count of query tokens found in P.title (case-insensitive)
-  body_hits  = count of query tokens found in P.text  (case-insensitive)
-```
-
-Results are sorted: `score DESC, depth ASC`. Pages with the same score are ranked by how close they are to the seed.
+Results sorted: `score DESC, depth ASC`. Ties broken by proximity to seed.
 
 ### 3.5 In-Memory vs. Persistent Storage
 
@@ -168,16 +165,16 @@ Resume logic:
 
 ```
 Usage:
-  crawler [flags]
+  python main.py [flags]
 
-Flags:
-  --seed      string   Seed URL to start crawling (required)
-  --depth     int      Maximum crawl depth k (default 3)
-  --workers   int      Concurrent worker count (default 10)
-  --queue-cap int      Work queue capacity M (default 500)
-  --rate      float    Max requests/sec per domain (default 2.0)
-  --persist           Enable persistent index (writes index.jsonl)
-  --limit     int      Max search results to return (default 20)
+Arguments (argparse):
+  --seed      str    Seed URL(s) — required, repeatable
+  --depth     int    Maximum crawl depth k (default 3)
+  --workers   int    Concurrent worker thread count (default 10)
+  --queue-cap int    Work queue capacity M (default 500)
+  --rate      float  Max requests/sec per domain (default 2.0)
+  --persist          Enable persistent index (writes index.jsonl)
+  --limit     int    Max search results to return (default 20)
 ```
 
 ### Search Interface (interactive CLI)
@@ -198,22 +195,22 @@ Flags:
 
 ## 5. Architecture: Concurrent Indexing + Live Search
 
-The key design decision is a **shared-memory, reader-writer lock** model:
+The key design decision is a **shared-memory, `threading.RLock`** model:
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                         Shared Index                               │
-│  sync.RWMutex (Go) / threading.RLock (Python)                      │
+│  threading.RLock (inside Index class)                              │
 │                                                                    │
-│  Crawler workers → Lock() → write PageRecord → Unlock()            │
-│  Searcher        → RLock() → read index snapshot → RUnlock()       │
+│  run_worker  → idx.put(record)  → with self._lock: dict[url]=rec  │
+│  SearchEngine → idx.all()       → with self._lock: list(dict)     │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Writers (crawler workers)** acquire an exclusive write lock only for the brief moment it takes to insert one `PageRecord`. This keeps lock contention minimal.
-- **Readers (searcher)** acquire a shared read lock, allowing multiple concurrent searches without blocking each other.
-- The searcher never sees a torn write (partially-written record) because the write lock is released only after the entire record is inserted.
-- This architecture provides **eventual consistency**: a search issued at time *t* returns all pages indexed before *t*, plus any pages whose write lock was released before the `RLock` was acquired.
+- **Writers (`run_worker`)** hold the lock only for the brief `dict` insertion. Minimal contention.
+- **Readers (`SearchEngine.query`)** call `idx.all()` which acquires the lock briefly to copy dict values into a list, then releases it. Scoring happens on the **copy** outside the lock — zero blocking of workers during scoring.
+- The searcher never sees a torn write because the lock is released only after the record is fully inserted.
+- **Eventual consistency:** a search at time *t* returns all pages whose lock was released before `idx.all()` acquired it.
 
 ---
 
@@ -230,8 +227,8 @@ The key design decision is a **shared-memory, reader-writer lock** model:
 ### 6.2 Correctness
 | Metric | Target |
 |--------|--------|
-| Duplicate pages | 0 (visited set must be leak-free) |
-| Data races | 0 detected under `-race` (Go) or `threading` sanitizer |
+| Duplicate pages | 0 — `VisitedSet.try_mark()` is atomic under `threading.Lock` |
+| Data races | 0 — verified by concurrent thread tests in `pytest tests/ -v` |
 | Max depth respected | No page crawled at depth > k |
 
 ### 6.3 System Visibility
@@ -247,11 +244,11 @@ The key design decision is a **shared-memory, reader-writer lock** model:
 
 | Category | Requirement |
 |----------|-------------|
-| **Language constraints** | Use only language-native HTTP and HTML parsing; no Scrapy, Beautiful Soup, requests, etc. |
-| **Portability** | Must run on Linux, macOS, and Windows without OS-specific dependencies |
-| **Observability** | Structured log lines (JSON preferred) written to `crawler.log` for post-mortem analysis |
-| **Graceful shutdown** | `Ctrl+C` / SIGINT triggers a clean drain: workers finish current page, queue is flushed to disk if `--persist` is set |
-| **Testing** | Unit tests for: visited-set uniqueness, back-pressure queue blocking, relevancy scoring, triple serialization |
+| **Language** | Python 3.11+ stdlib only; no Scrapy, BeautifulSoup, requests, httpx, lxml |
+| **Portability** | `python main.py` runs on Linux, macOS, and Windows without OS-specific deps |
+| **Observability** | JSON log lines written to `crawler.log`; human-readable level to stderr |
+| **Graceful shutdown** | `Ctrl+C` → `stop_event.set()` → all daemon threads exit cleanly, no traceback |
+| **Testing** | `pytest tests/ -v` covers: visited-set uniqueness, queue back-pressure, relevancy scoring, triple format |
 
 ---
 
@@ -261,7 +258,7 @@ The key design decision is a **shared-memory, reader-writer lock** model:
 |-------|-------------|-------|
 | **Phase 1 – PRD** | `product_prd.md` (this document) | Architect |
 | **Phase 2 – Design** | System architecture diagram, module interface definitions | Architect + AI |
-| **Phase 3 – Prompting** | `.cursorrules` coding standards, AI prompt templates | Architect |
+| **Phase 3 – Prompting** | `.antigravity` coding standards, AI prompt templates | Architect |
 | **Phase 4 – Implementation** | Core crawler → Search engine → Dashboard | AI (supervised) |
 
 ---

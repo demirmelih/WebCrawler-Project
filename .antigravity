@@ -1,0 +1,433 @@
+# .antigravity
+# Antigravity Agent — Coding Standards & Prompting Rules
+# Project: Web Crawler & Real-Time Search Engine
+# Language: Python 3.11+
+# Phase: 3 — Active from Phase 4 (Iterative Coding) onward
+#
+# This file is the single source of truth for how Antigravity
+# must write, structure, and verify all code in this project.
+# Every code generation prompt must be consistent with these rules.
+
+# ─────────────────────────────────────────────────────────────
+# 1. LANGUAGE & RUNTIME
+# ─────────────────────────────────────────────────────────────
+
+LANGUAGE      = "Python"
+VERSION       = "3.11+"
+ENTRY_POINT   = "main.py"
+PACKAGE_ROOT  = "crawler/"        # all modules live here
+TEST_ROOT     = "tests/"
+DEPS_FILE     = "requirements.txt"   # must stay essentially empty (stdlib only)
+
+# ─────────────────────────────────────────────────────────────
+# 2. BANNED LIBRARIES — NEVER USE THESE
+# ─────────────────────────────────────────────────────────────
+
+BANNED = [
+  # HTTP clients
+  "requests",
+  "httpx",
+  "aiohttp",
+  "urllib3",       # third-party; use stdlib urllib only
+
+  # HTML / scraping
+  "beautifulsoup4",
+  "bs4",
+  "lxml",
+  "scrapy",
+  "playwright",
+  "selenium",
+  "mechanize",
+  "pyquery",
+]
+
+# requirements.txt must contain NO banned packages.
+# Allowed in requirements.txt: pytest, pytest-timeout (test-only, dev dep only).
+
+# ─────────────────────────────────────────────────────────────
+# 3. REQUIRED NATIVE (STDLIB) LIBRARIES ONLY
+# ─────────────────────────────────────────────────────────────
+
+ALLOWED_HTTP      = "urllib.request, urllib.parse, urllib.error"
+ALLOWED_HTML      = "html.parser (via html.HTMLParser)"
+ALLOWED_SYNC      = "threading, queue"
+ALLOWED_COUNTERS  = "threading.Lock + plain int  (Python has no atomic int; use Lock)"
+ALLOWED_CLI       = "argparse"
+ALLOWED_JSON      = "json"
+ALLOWED_LOGGING   = "logging (with JSONFormatter or manual JSON formatting)"
+ALLOWED_SIGNALS   = "signal"
+ALLOWED_TIME      = "time, datetime"
+
+# ─────────────────────────────────────────────────────────────
+# 4. MODULE RULES
+# ─────────────────────────────────────────────────────────────
+
+# Dependency direction is STRICTLY one-way (no circular imports):
+#   main.py → coordinator → worker → index
+#                         → search  → index
+#                         → dashboard → index
+#                         → persistence → index
+
+MODULE_RULES = """
+crawler/index.py        : defines PageRecord dataclass + Index class (RLock-protected dict).
+                          NO imports from other crawler modules.
+
+crawler/coordinator.py  : defines Config dataclass, CrawlStats, VisitedSet, Coordinator.
+                          Imports: crawler.index only.
+
+crawler/worker.py       : fetch + parse + enqueue logic. run_worker() runs in a Thread.
+                          Imports: crawler.index, crawler.coordinator.
+
+crawler/search.py       : defines ResultTriple dataclass + SearchEngine class.
+                          Imports: crawler.index only. Must NEVER write to index.
+
+crawler/dashboard.py    : terminal UI refresh loop (runs in its own Thread).
+                          Imports: crawler.index, crawler.coordinator, crawler.search.
+
+crawler/persistence.py  : JSONL append/load. Protected by its own threading.Lock.
+                          Imports: crawler.index only.
+
+main.py                 : wires everything, parses CLI flags, handles SIGINT.
+                          No business logic.
+"""
+
+# ─────────────────────────────────────────────────────────────
+# 5. CONCURRENCY RULES — NON-NEGOTIABLE
+# ─────────────────────────────────────────────────────────────
+
+CONCURRENCY_RULES = """
+1. The Index dict MUST be protected by a single threading.RLock:
+     - Writes (put): acquire exclusive lock  → _lock.acquire() ... _lock.release()
+     - Reads  (get / all / size): acquire shared read-lock via _lock (RLock allows re-entrant reads)
+   Python's threading.RLock does NOT distinguish readers from writers.
+   Use a custom ReadWriteLock if true reader concurrency is needed (see implementation prompt).
+
+2. The VisitedSet MUST use its own threading.Lock, separate from the Index lock.
+   try_mark(url) must be atomic: check-and-insert under one lock acquisition.
+
+3. CrawlStats counters MUST be updated under a threading.Lock.
+   Python has no atomic integers; use a dedicated stats_lock.
+
+4. The work queue MUST be queue.Queue(maxsize=M).
+   Workers call queue.put(item, block=True) — this BLOCKS naturally when full.
+   Never call threading.Thread() inside the worker loop to add items.
+
+5. All worker threads are created ONCE in coordinator.start() using a fixed ThreadPoolExecutor
+   or manual Thread list. The pool size equals Config.num_workers.
+
+6. Every worker loop MUST check a threading.Event (stop_event) for graceful shutdown:
+     while not stop_event.is_set():
+         try:
+             item = queue.get(timeout=1)
+         except queue.Empty:
+             continue
+
+7. SIGINT (Ctrl+C) sets stop_event → all threads drain and exit cleanly.
+"""
+
+# ─────────────────────────────────────────────────────────────
+# 6. NAMING CONVENTIONS
+# ─────────────────────────────────────────────────────────────
+
+NAMING = """
+Classes:          PascalCase        e.g. PageRecord, CrawlStats, SearchEngine
+Functions/methods: snake_case       e.g. try_mark(), run_worker(), load_all()
+Module files:     snake_case        e.g. index.py, coordinator.py
+Constants:        UPPER_SNAKE_CASE  e.g. DEFAULT_WORKERS, DEFAULT_DEPTH
+Dataclasses:      use @dataclass decorator from stdlib dataclasses module
+Private attrs:    leading underscore  e.g. self._lock, self._store
+Test files:       tests/test_<module>.py
+"""
+
+# ─────────────────────────────────────────────────────────────
+# 7. ERROR HANDLING
+# ─────────────────────────────────────────────────────────────
+
+ERROR_RULES = """
+- ALL network calls MUST be wrapped in try/except.
+- Non-fatal crawl errors (HTTP 4xx/5xx, timeout, parse fail):
+    logger.warning("...", extra={...})
+    stats.increment_errors()
+    continue   # never crash the worker thread
+
+- urllib.error.URLError / urllib.error.HTTPError → catch separately, log, continue.
+- Fatal startup errors (missing --seed, bad URL format):
+    logger.critical("...")
+    sys.exit(1)
+
+- Never use bare `except:` — always catch specific exception types or Exception as e.
+- Always log the exception message: logger.warning(f"Failed {url}: {e}")
+"""
+
+# ─────────────────────────────────────────────────────────────
+# 8. LOGGING
+# ─────────────────────────────────────────────────────────────
+
+LOGGING_RULES = """
+- Use Python stdlib `logging` module.
+- Configure TWO handlers at startup:
+    1. StreamHandler(sys.stderr) — human-readable: level INFO
+    2. FileHandler("crawler.log") — JSON format: level DEBUG
+- JSON log record format (one line per event):
+    {"level":"INFO","url":"...","origin":"...","depth":2,"status":200,"ts":"..."}
+- Use logging.LoggerAdapter or extra={} dict to attach structured fields.
+- Dashboard terminal output uses print() to stdout — NEVER use logger inside dashboard render.
+- logger = logging.getLogger(__name__) in every module (no global root logger calls).
+"""
+
+# ─────────────────────────────────────────────────────────────
+# 9. TESTING REQUIREMENTS
+# ─────────────────────────────────────────────────────────────
+
+TEST_RULES = """
+Test framework: pytest   (pip install pytest pytest-timeout — dev deps only)
+Run all tests:  pytest tests/ -v
+
+Required test cases per module:
+
+  tests/test_index.py:
+    - put() then get() returns correct PageRecord
+    - size() returns correct count after multiple puts
+    - all() returns a copy (mutations don't affect internal state)
+    - Concurrent put() from 20 threads produces no KeyError / data loss
+
+  tests/test_coordinator.py (VisitedSet):
+    - try_mark() returns True on first call, False on repeat
+    - try_mark() is safe under concurrent access (20 threads, same URL)
+
+  tests/test_worker.py (mock urllib.request.urlopen):
+    - HTTP 200 → PageRecord written to index, child URLs enqueued
+    - HTTP 404 → error counted, nothing written to index
+    - Link at depth=k → NOT enqueued
+    - Relative URLs resolved to absolute before enqueue
+
+  tests/test_search.py:
+    - query() returns list of ResultTriple with correct (url, origin_url, depth)
+    - Title match scores higher than body-only match
+    - Results sorted DESC by score, ASC by depth on tie
+    - query() on empty index returns [] (no exception)
+
+  tests/test_persistence.py:
+    - append() + load_all() round-trips PageRecord correctly
+    - load_all() on missing file returns [] (no FileNotFoundError)
+    - Concurrent append() calls do not corrupt the JSONL file
+"""
+
+# ─────────────────────────────────────────────────────────────
+# 10. AI PROMPT TEMPLATES (Phase 4 Scaffolding)
+# ─────────────────────────────────────────────────────────────
+# Use these VERBATIM when asking Antigravity to implement each module.
+
+PROMPT_INDEX = """
+Implement `crawler/index.py` for the WebCrawler project (Python 3.11+, stdlib only).
+
+Requirements:
+- Use @dataclass to define PageRecord with fields:
+    url: str, origin_url: str, depth: int,
+    title: str, text: str, indexed_at: datetime  (from datetime module)
+- Implement class Index with:
+    __init__(self): creates internal dict[str, PageRecord] and threading.RLock
+    put(self, record: PageRecord) -> None     # exclusive write
+    get(self, url: str) -> Optional[PageRecord]
+    all(self) -> list[PageRecord]             # returns a COPY; no mutation of internal state
+    size(self) -> int
+- Locking: all methods must acquire self._lock before accessing self._store.
+- Use ONLY stdlib: threading, dataclasses, datetime, typing.
+- Include tests in tests/test_index.py (see TEST_RULES for required cases).
+"""
+
+PROMPT_COORDINATOR = """
+Implement `crawler/coordinator.py` for the WebCrawler project (Python 3.11+, stdlib only).
+
+Requirements:
+- @dataclass Config: seeds: list[str], max_depth: int=3, num_workers: int=10,
+  queue_cap: int=500, rate_per_sec: float=2.0
+- @dataclass WorkItem: url: str, origin: str, depth: int
+- class CrawlStats:
+    Internal threading.Lock + plain int counters: processed, errors, queued, active_workers.
+    Methods: increment_processed(), increment_errors(), set_queued(n), snapshot() -> dict
+- class VisitedSet:
+    Internal threading.Lock + set[str].
+    try_mark(url: str) -> bool  # True = first visit, False = already seen. Atomic.
+- class Coordinator:
+    __init__(self, cfg: Config, idx: Index)
+    start(self, stop_event: threading.Event) -> None
+      # Creates queue.Queue(maxsize=cfg.queue_cap)
+      # Enqueues seed WorkItems at depth=0
+      # Spawns cfg.num_workers daemon threads each running worker.run_worker()
+      # Blocks until stop_event is set and all threads finish (join with timeout)
+    stats(self) -> CrawlStats
+    queue_ref(self) -> queue.Queue   # for dashboard to read qsize()
+- Use ONLY stdlib: threading, queue, dataclasses.
+"""
+
+PROMPT_WORKER = """
+Implement `crawler/worker.py` for the WebCrawler project (Python 3.11+, stdlib only).
+
+Requirements:
+- Implement run_worker(work_q, visited, idx, cfg, stats, stop_event) — runs as a Thread target.
+- Loop: while not stop_event.is_set(): get item from work_q with timeout=1s.
+- HTTP: use ONLY urllib.request.urlopen() with timeout=10. Set User-Agent header.
+- Response: read up to 2MB (resp.read(2_000_000)). Decode with errors='replace'.
+- HTML parsing: use ONLY html.parser via html.HTMLParser subclass.
+  Extract: <title> text, all <a href="..."> values, visible body text.
+- URL resolution: urllib.parse.urljoin(base, href) for relative links.
+- For each discovered link:
+    if item.depth + 1 > cfg.max_depth → skip
+    if not visited.try_mark(abs_url) → skip
+    work_q.put(WorkItem(abs_url, item.url, item.depth+1), block=True, timeout=5)
+- Write PageRecord to idx.put() after successful parse.
+- Errors: catch urllib.error.URLError, urllib.error.HTTPError, Exception.
+  On any error: stats.increment_errors(), logger.warning(...), continue.
+- stats.increment_processed() after each successful crawl.
+- Use ONLY stdlib + crawler.index + crawler.coordinator.
+"""
+
+PROMPT_SEARCH = """
+Implement `crawler/search.py` for the WebCrawler project (Python 3.11+, stdlib only).
+
+Requirements:
+- @dataclass ResultTriple: url: str, origin_url: str, depth: int, score: int
+- class SearchEngine:
+    __init__(self, idx: Index)
+    query(self, query_str: str, limit: int = 20) -> list[ResultTriple]
+
+- Scoring (inside query):
+    tokens = query_str.lower().split()
+    title_hits = sum(1 for t in tokens if t in record.title.lower())
+    body_hits  = sum(1 for t in tokens if t in record.text.lower())
+    score = 2 * title_hits + body_hits
+
+- Sort: sorted(results, key=lambda r: (-r.score, r.depth))
+- Return only top `limit` items.
+- Call idx.all() to get snapshot — do NOT access index internals directly.
+- Must NEVER call idx.put().
+- Empty index → return [].
+- Use ONLY stdlib + crawler.index.
+"""
+
+PROMPT_DASHBOARD = """
+Implement `crawler/dashboard.py` for the WebCrawler project (Python 3.11+, stdlib only).
+
+Requirements:
+- class Dashboard:
+    __init__(self, coordinator, idx, search_engine, cfg)
+    run(self, stop_event: threading.Event) -> None   # called in its own Thread
+
+- Refresh loop: every 1 second, clear terminal (print chr(27)+"[2J"+chr(27)+"[H"),
+  then print:
+    ╔══════════════════════════════════════════════╗
+    ║        WEB CRAWLER — LIVE DASHBOARD          ║
+    ╠══════════════════════════════════════════════╣
+    ║  Status   : [CRAWLING] or [THROTTLED]        ║
+    ║  Workers  : {active} / {total} active        ║
+    ║  Processed: {processed}  URLs                ║
+    ║  Queued   : {queued}  /  {cap} capacity      ║
+    ║  Indexed  : {size}  pages                    ║
+    ║  Errors   : {errors}                         ║
+    ╠══════════════════════════════════════════════╣
+    ║  > search <query>  │  Ctrl+C to stop         ║
+    ╚══════════════════════════════════════════════╝
+
+- [THROTTLED] when queued >= queue_cap, else [CRAWLING].
+- Spawn a separate daemon Thread to read stdin lines.
+  If line starts with "search ": call search_engine.query() and print results below the box.
+- Respect stop_event.is_set() to exit both threads.
+- Use print() for output — no logger calls inside render.
+- Use ONLY stdlib + crawler.* packages.
+"""
+
+PROMPT_PERSISTENCE = """
+Implement `crawler/persistence.py` for the WebCrawler project (Python 3.11+, stdlib only).
+
+Requirements:
+- class Persistence:
+    __init__(self, filepath: str = "index.jsonl")
+    append(self, record: PageRecord) -> None
+      Opens file in append mode ("a", encoding="utf-8")
+      Writes json.dumps(asdict(record), default=str) + newline
+      Closes file after each write (safe across crashes)
+      Protected by internal threading.Lock
+    load_all(self) -> list[PageRecord]
+      Opens filepath; if FileNotFoundError → return []
+      Reads line by line; json.loads each line → reconstruct PageRecord
+      Skip malformed lines (log warning, continue)
+      Protected by internal threading.Lock
+
+- Use dataclasses.asdict() for serialisation.
+- For deserialisation, handle indexed_at as ISO string → datetime.fromisoformat().
+- Use ONLY stdlib: json, threading, pathlib, dataclasses, datetime + crawler.index.
+"""
+
+PROMPT_MAIN = """
+Implement `main.py` for the WebCrawler project (Python 3.11+, stdlib only).
+
+Requirements:
+- Parse CLI args with argparse:
+    --seed      str    (required, can be repeated with nargs='+')
+    --depth     int    default 3
+    --workers   int    default 10
+    --queue-cap int    default 500
+    --rate      float  default 2.0
+    --persist         store_true, default False
+    --limit     int    default 20
+
+- Wire modules in this order:
+    1. Configure logging (stderr + crawler.log JSON handler)
+    2. idx = Index()
+    3. cfg = Config(seeds=args.seed, max_depth=args.depth, ...)
+    4. If --persist: records = Persistence().load_all()
+                     for r in records: idx.put(r)
+                     also pre-populate VisitedSet from records
+    5. coordinator = Coordinator(cfg, idx)
+    6. search_engine = SearchEngine(idx)
+    7. dashboard = Dashboard(coordinator, idx, search_engine, cfg)
+    8. stop_event = threading.Event()
+
+- Signal handling:
+    signal.signal(signal.SIGINT, lambda *_: stop_event.set())
+
+- Launch threads:
+    Thread(target=coordinator.start, args=(stop_event,), daemon=True).start()
+    Thread(target=dashboard.run, args=(stop_event,), daemon=True).start()
+
+- Block main thread: stop_event.wait()
+- On exit: if --persist: flush any remaining records (or just ensure Persistence.append
+  is called inside worker — no extra flush needed if append-per-record is used).
+- No business logic in main.py — only wiring and signal setup.
+- Use ONLY stdlib + crawler.* packages.
+"""
+
+# ─────────────────────────────────────────────────────────────
+# 11. IMPLEMENTATION ORDER (Phase 4)
+# ─────────────────────────────────────────────────────────────
+
+PHASE_4_ORDER = """
+Build and test in this EXACT order:
+
+  Step 1 → crawler/index.py          + tests/test_index.py
+  Step 2 → crawler/persistence.py    + tests/test_persistence.py
+  Step 3 → crawler/coordinator.py    + tests/test_coordinator.py
+  Step 4 → crawler/worker.py         + tests/test_worker.py
+  Step 5 → crawler/search.py         + tests/test_search.py
+  Step 6 → crawler/dashboard.py      (manual verification)
+  Step 7 → main.py                   (wiring)
+  Step 8 → Integration test          (crawl a local http.server end-to-end)
+
+After each step: pytest tests/ -v  must pass before moving to next step.
+"""
+
+# ─────────────────────────────────────────────────────────────
+# 12. DEFINITION OF DONE (Phase 4 exit criteria)
+# ─────────────────────────────────────────────────────────────
+
+DONE_CRITERIA = """
+✅ pytest tests/ -v passes with 0 failures
+✅ Crawler reaches depth k from a seed URL with 0 duplicates in index
+✅ Search returns correct (url, origin_url, depth) triples ranked by score
+✅ Dashboard refreshes every ~1s with accurate queue depth + throttle status
+✅ Ctrl+C triggers graceful shutdown — all threads exit, no exception traceback
+✅ --persist flag: crawl can be interrupted and resumed from index.jsonl
+✅ requirements.txt contains NO banned package (only pytest/pytest-timeout as dev deps)
+✅ No import of requests, beautifulsoup4, scrapy, httpx anywhere in crawler/ or main.py
+"""
