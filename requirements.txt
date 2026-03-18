@@ -1,0 +1,3 @@
+# Dev dependencies only (no banned packages)
+pytest>=8.0
+pytest-timeout>=2.3
