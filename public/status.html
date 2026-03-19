@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Status | Web Crawler Engine</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="glass-panel topnav">
+        <div class="branding" style="font-size: 1.25rem; font-weight: bold;">🕸️ Crawler<span class="accent">X</span></div>
+        <div class="nav-links">
+            <a href="/">Crawler Jobs</a>
+            <a href="/status.html" class="active">Status</a>
+            <a href="/search.html">Search</a>
+        </div>
+    </nav>
+
+    <div class="app-container">
+        <main class="main-content" style="max-width: 1000px; margin: 0 auto; width: 100%;">
+            <div id="no-job-warning" class="empty-state glass-panel" style="display:none; padding: 4rem;">
+                Please select a job from the <a href="/" class="accent">Crawler Jobs</a> page to view its status.
+            </div>
+
+            <div id="status-dashboard" style="display:none;">
+                <!-- Header -->
+                <div class="glass-panel padded-panel mb-4 status-header flex-between">
+                    <div>
+                        <h2 style="margin-bottom: 0.5rem;">Job ID: <span id="job-id-text" class="accent">...</span></h2>
+                        <div class="job-meta text-muted" style="font-size: 0.875rem;">
+                            Seed: <strong id="job-seed" style="color: var(--text-main);">...</strong> &nbsp;|&nbsp; 
+                            Started: <span id="job-start">...</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 1rem; align-items: center;">
+                        <div class="status-badge" id="job-status-badge">LOADING</div>
+                        <button type="button" id="btn-stop" class="btn danger" style="padding: 0.5rem 1rem;">Stop Job</button>
+                    </div>
+                </div>
+
+                <!-- Stats Row -->
+                <section class="metrics-row mb-4">
+                    <div class="glass-panel metric-card">
+                        <div class="metric-icon">🚀</div>
+                        <div class="metric-info">
+                            <h4>Processed</h4>
+                            <span id="metric-processed" class="metric-value">0</span>
+                        </div>
+                    </div>
+                    
+                    <div class="glass-panel metric-card" id="queue-card">
+                        <div class="metric-icon">⏳</div>
+                        <div class="metric-info">
+                            <h4>Queued</h4>
+                            <span id="metric-queued" class="metric-value">0</span>
+                            <div class="progress-bar"><div id="queue-fill" class="progress-fill"></div></div>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel metric-card">
+                        <div class="metric-icon">⚠️</div>
+                        <div class="metric-info">
+                            <h4>Errors</h4>
+                            <span id="metric-errors" class="metric-value">0</span>
+                        </div>
+                    </div>
+                    
+                    <div class="glass-panel metric-card">
+                        <div class="metric-info">
+                            <h4>Active Workers</h4>
+                            <span id="metric-workers" class="metric-value">0 / 0</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Long Polling State Logs -->
+                <section class="glass-panel terminal-container">
+                    <div class="terminal-header">
+                        <div class="traffic-lights">
+                            <span style="background: #ff5f56;"></span>
+                            <span style="background: #ffbd2e;"></span>
+                            <span style="background: #27c93f;"></span>
+                        </div>
+                        <span class="terminal-title">State Logs — Long Polling output</span>
+                    </div>
+                    <div class="terminal-body" id="state-logs">
+                        <div style="color: var(--text-muted); font-style: italic;">Awaiting connection to crawler logs...</div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+    <script src="status.js"></script>
+</body>
+</html>

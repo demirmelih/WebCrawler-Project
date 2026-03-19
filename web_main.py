@@ -12,7 +12,7 @@ import threading
 from http.server import HTTPServer
 from socketserver import ThreadingMixIn
 
-from crawler.web import CrawlerAPIHandler, CrawlerContext
+from crawler.web import CrawlerAPIHandler, GlobalState
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -33,7 +33,12 @@ def main() -> None:
 
     def handle_sigint(*_):
         print("\n[!] Shutting down...")
-        CrawlerContext.stop_event.set()
+        # Signal all running jobs to stop
+        with GlobalState.jobs_lock:
+            for job in GlobalState.jobs.values():
+                if job["status"] == "running":
+                    job["stop_event"].set()
+                    
         # Shutdown server asynchronously so we don't block signal handler
         threading.Thread(target=server.shutdown, daemon=True).start()
         
@@ -45,10 +50,17 @@ def main() -> None:
         pass
     finally:
         server.server_close()
-        # Wait for crawler thread if running
-        if CrawlerContext.coord_thread and CrawlerContext.coord_thread.is_alive():
-            print("[*] Waiting for crawler thread to finish...")
-            CrawlerContext.coord_thread.join(timeout=5)
+        print("[*] Waiting for running jobs to cleanly exit (max 5s)...")
+        # Give threads a few seconds to finish up safely
+        threads = []
+        with GlobalState.jobs_lock:
+            for job in GlobalState.jobs.values():
+                if job["thread"] and job["thread"].is_alive():
+                    threads.append(job["thread"])
+                    
+        for t in threads:
+            t.join(timeout=5)
+            
         print("[*] Goodbye!")
 
 if __name__ == "__main__":
