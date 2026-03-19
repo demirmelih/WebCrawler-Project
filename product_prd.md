@@ -17,8 +17,7 @@ Build a functional, concurrent web crawler ("Indexer") and a real-time search en
 - Crawl the web recursively from a seed URL to a configurable depth *k*.
 - Index page content and metadata in memory (with optional persistence).
 - Expose a query interface that returns ranked, triple-format results.
-- Allow search queries while indexing is still in progress (live indexing).
-- Display a real-time dashboard showing crawler health and queue state.
+- Provide a modern Web UI to manage multiple crawling jobs, view real-time log streaming via long polling, and search the global index.
 
 ### 1.3 Out of Scope
 - JavaScript rendering (no headless browser; plain HTTP only).
@@ -55,17 +54,16 @@ Build a functional, concurrent web crawler ("Indexer") and a real-time search en
 | F-S-05 | **Thread safety** | All reads and writes to the shared index must be protected by appropriate synchronization primitives (Mutex / RWMutex / concurrent map) to prevent data races. |
 | F-S-06 | **Result limit** | By default, return the top 20 results. User may override via `--limit N`. |
 
-### 2.3 Dashboard / UI
+### 2.3 Web Dashboard / UI
 
 | ID | Requirement | Detail |
 |----|-------------|--------|
-| F-D-01 | **Real-time display** | A terminal dashboard (or lightweight web UI) that refreshes every 1–2 seconds. |
-| F-D-02 | **Indexing progress** | Show `URLs processed` vs `URLs queued`. |
-| F-D-03 | **Queue depth** | Current number of URLs waiting in the work queue. |
-| F-D-04 | **Back-pressure status** | Indicate whether the queue is at capacity / throttling is active (e.g., `[THROTTLED]` / `[OK]`). |
-| F-D-05 | **Worker utilization** | Number of active workers vs configured max. |
-| F-D-06 | **Error count** | Running count of skipped / failed URLs. |
-| F-D-07 | **Interactive search** | User can submit a search query directly from the dashboard without stopping the crawler. |
+| F-D-01 | **Multi-Page Application** | A modern, glassmorphic 3-page Web UI (`crawler.html`, `status.html`, `search.html`) served by a native Python HTTP server. |
+| F-D-02 | **Job Management** | Users can configure and launch multiple isolated crawler jobs concurrently. The 'Crawler Jobs' page tracks historical operations by ID and status. |
+| F-D-03 | **Real-time Status Polling** | The 'Status' page uses long-polling to display live system insights for a specific Job ID: processed URLs, queue depth, back-pressure, and active workers. |
+| F-D-04 | **Live State Logs** | The Status page streams real-time state logs (e.g., fetch errors, indexing progress) into a terminal-like window without refreshing the page. |
+| F-D-05 | **Graceful Interruption** | Clicking 'Stop' on a running job instantly marks it as interrupted in the UI while safely sending shutdown signals to the backend threads. |
+| F-D-06 | **Global Search Interface** | A dedicated 'Search' page provides "as-you-type" debounced searching across the shared filesystem index populated by all crawler jobs. |
 
 ---
 

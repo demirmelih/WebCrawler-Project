@@ -11,32 +11,34 @@
 ## 1. High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                             main.py                                  │
-│  CLI entry-point: argparse, wire modules, signal handler, threads   │
-└───────┬─────────────────────┬──────────────────────┬───────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                              web_main.py                               │
+│  CLI entry-point: argparse, HTTP server, shutdown hooks                │
+└───────┬────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│    crawler/web.py (API Handler & Job Manager)                          │
+│    Routes HTML/JS/CSS, manages multiple crawler jobs, long polling     │
+└───────┬─────────────────────┬──────────────────────┬───────────────────┘
         │                     │                      │
         ▼                     ▼                      ▼
-┌───────────────┐   ┌──────────────────┐   ┌────────────────────┐
-│   Coordinator │   │  SearchEngine    │   │    Dashboard       │
-│   (Crawler)   │   │  (Searcher)      │   │    (UI / CLI)      │
-└───────┬───────┘   └────────┬─────────┘   └────────┬───────────┘
-        │                    │                       │
-        │          ┌─────────▼──────────┐            │
-        │          │   Shared Index     │◄───────────┘
-        │          │  (RLock + dict)    │   (read metrics)
-        │          └─────────▲──────────┘
-        │                    │ index.put(record)
-        ▼                    │
-┌───────────────┐    ┌───────┴────────┐
-│  Work Queue   │───►│  Worker Pool   │
-│ queue.Queue   │    │  N Threads     │
-│ (maxsize=M)   │    │  (daemon=True) │
-└───────────────┘    └───────┬────────┘
-        ▲                    │ urllib.request + html.parser
-        │  queue.put(block)  │
-        └────────────────────┘
-        (back-pressure: put blocks when queue full)
+┌───────────────┐   ┌───────────────┐      ┌────────────────────┐
+│   Job 1       │   │   Job N       │      │  SearchEngine      │
+│ (Coordinator) │   │ (Coordinator) │      │  (Global Queries)  │
+└───────┬───────┘   └───────┬───────┘      └────────┬───────────┘
+        │                   │                       │
+        └─────────┬─────────┘                       │
+                  ▼                                 │
+         ┌──────────────────┐                       │
+         │   Shared Index   │◄──────────────────────┘
+         │  (RLock + dict)  │
+         └────────▲─────────┘
+                  │ index.put(record)
+        ┌─────────┴─────────┐
+        │   Worker Pools    │
+        │   N Threads/Job   │
+        └───────────────────┘
 ```
 
 ---
@@ -46,13 +48,13 @@
 The project is divided into **6 modules** (packages/files). The dependency graph flows strictly downward — no circular imports.
 
 ```
-main
- ├── coordinator   (owns WorkQueue, spawns workers)
- │    └── worker  (fetches, parses, enqueues)
- ├── index        (shared PageRecord store — thread-safe)
- ├── search       (query engine — reads index)
- ├── dashboard    (metrics display — reads index + queue stats)
- └── persistence  (optional save/load to index.jsonl)
+web_main
+ ├── web           (HTTP server, JobManager: tracks jobs and routes)
+ │    ├── coordinator (owns WorkQueue, spawns workers per job)
+ │    │    └── worker (fetches, parses, enqueues)
+ │    └── search   (query engine)
+ ├── index         (shared PageRecord store — thread-safe)
+ └── persistence   (optional save/load to index.jsonl)
 ```
 
 ---
@@ -247,50 +249,40 @@ body_hits  = count of query tokens found in record.text  (case-insensitive)
 
 ---
 
-### 3.5 `crawler/dashboard.py` — Real-Time Display
+### 3.5 `crawler/web.py` — Web UI & Job Manager
 
-**Responsibility:** Polls `coordinator.stats()` and `index.size()` every 1 second and renders a live terminal view.
+**Responsibility:** Provides an HTTP server that hosts the static HTML/CSS/JS components while simultaneously exposing a REST API for spawning, stopping, and long-polling crawler jobs tracking multiple `Coordinator`s globally.
 
 ```python
-from threading import Event, Thread
-import time, sys
+from http.server import BaseHTTPRequestHandler
+import json, threading
 
-class Dashboard:
-    def __init__(self, coordinator, idx, search_engine, cfg): ...
+class GlobalState:
+    idx = Index()
+    search_engine = SearchEngine(idx)
+    jobs: dict[str, dict] = {}
+    jobs_lock = threading.Lock()
 
-    def run(self, stop_event: Event) -> None:
-        """Called in its own daemon Thread. Refreshes every 1s."""
-        stdin_thread = Thread(target=self._read_stdin,
-                              args=(stop_event,), daemon=True)
-        stdin_thread.start()
-        while not stop_event.is_set():
-            self._render()
-            time.sleep(1)
-
-    def _render(self) -> None:
-        # clear terminal, print box with live metrics
+class CrawlerAPIHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        # Handles: 
+        # /api/jobs -> returns history
+        # /api/job/<id>?last_log_idx=... -> long polling state logs
+        # /api/search?q=... -> queries search engine
+        # /... -> serves public/ HTML, CSS, JS
         ...
 
-    def _read_stdin(self, stop_event: Event) -> None:
-        # reads "search <query>" lines from stdin, calls search_engine.query()
+    def do_POST(self) -> None:
+        # Handles:
+        # /api/start -> spawns Coordinator thread, updates GlobalState
+        # /api/stop/<id> -> signals stop_event, gracefully joins threads
         ...
 ```
 
-**Output layout (terminal):**
-```
-╔══════════════════════════════════════════════╗
-║        WEB CRAWLER — LIVE DASHBOARD          ║
-╠══════════════════════════════════════════════╣
-║  Status   : [CRAWLING]  /  [THROTTLED]       ║
-║  Workers  : 8 / 10 active                    ║
-║  Processed: 1,234  URLs                      ║
-║  Queued   : 87  /  500 capacity              ║
-║  Indexed  : 1,201  pages                     ║
-║  Errors   : 12                               ║
-╠══════════════════════════════════════════════╣
-║  > search <query>  │  Ctrl+C to stop         ║
-╚══════════════════════════════════════════════╝
-```
+**Output layout (Multi-Page Web UI):**
+- `public/crawler.html` - Form to create job + list of historical operations
+- `public/status.html` - Live stats and pulsing terminal tailing fetch logs
+- `public/search.html` - Search over the globally shared Index using `SearchEngine`
 
 ---
 
@@ -332,44 +324,29 @@ class Persistence:
 ## 4. Data Flow: End-to-End Crawl Cycle
 
 ```
-Step 1 — Startup  (main.py)
-  Parse argparse flags → build Config
-  Create: Index(), Coordinator(cfg, idx), SearchEngine(idx), Dashboard(...)
-  stop_event = threading.Event()
-  If --persist: Persistence().load_all() → pre-fill idx + visited set
+Step 1 — Startup  (web_main.py)
+  Parse argparse flags
+  Create: ThreadedHTTPServer(CrawlerAPIHandler)
   signal.signal(SIGINT, lambda *_: stop_event.set())
+  If --persist: Persistence().load_all() pre-fills shared GlobalState.idx
 
-Step 2 — Worker loop  (crawler/worker.py, N daemon Threads)
-  while not stop_event.is_set():
-      item = work_q.get(timeout=1)          ← blocks if empty, raises Empty if timeout
-      urllib.request.urlopen(url, timeout=10)
-      if status != 2xx → stats.increment_errors(), continue
-      html.HTMLParser subclass extracts title, body text, hrefs
-      idx.put(PageRecord(...))              ← RLock write
-      persistence.append(record)           ← if --persist
-      for href in links:
-          abs_url = urljoin(base, href)
-          if depth+1 > cfg.max_depth → skip
-          if not visited.try_mark(abs_url) → skip
-          work_q.put(WorkItem(...), block=True)  ← BLOCKS when queue full (back-pressure)
+Step 2 — Launch Job (HTTP POST /api/start)
+  JobManager creates Config, Coordinator(cfg, idx)
+  stop_event = threading.Event()
+  job_thread = threading.Thread(target=coordinator.start)
+  t.start()
 
-Step 3 — Searcher  (any time, concurrent with Step 2)
-  user types "search <query>" in dashboard stdin listener
-  search_engine.query(q, limit)
-      idx.all()                            ← RLock read (copy)
-      score each PageRecord, sort DESC score / ASC depth
-      return top N ResultTriples
+Step 3 — Worker loop (crawler/worker.py, N daemon Threads per Job)
+  ... (Same I/O bound fetch routing as previous design, pushing to global idx) ...
 
-Step 4 — Dashboard  (crawler/dashboard.py, 1 daemon Thread)
-  every 1s: coordinator.stats().snapshot() + idx.size()
-  re-render terminal box
-  separate stdin Thread listens for "search <query>"
+Step 4 — Status Long-Polling (HTTP GET /api/job/<id>)
+  Frontend javascript queries live logs.
+  If stats incremented since last poll, web.py synthesizes string logs ("Processed X pages")
+  Returns active metrics until Job is completed.
 
-Step 5 — Shutdown  (SIGINT / Ctrl+C)
-  stop_event.set() → all worker threads exit their while-loop
-  main thread: stop_event.wait() returns
-  daemon threads auto-cleaned up by Python runtime
-  crawler.log flushed automatically
+Step 5 — Search (HTTP GET /api/search)
+  search_engine.query(q, limit) reads shared idx copy
+  Frontend search.html displays HTML nodes.
 ```
 
 ---
@@ -394,7 +371,13 @@ WebCrawler/
 ├── product_prd.md          ← Phase 1 output
 ├── system_design.md        ← Phase 2 output (this file)
 ├── requirements.txt        ← dev deps only (pytest, pytest-timeout)
-├── main.py                 ← CLI entry-point, wires all modules
+├── web_main.py             ← Entry server mapping Job Manager to UI
+│
+├── public/                 ← Multi-Page glassmorphism Web UI
+│   ├── crawler.html, .js   ← Job management Form & History  
+│   ├── status.html, .js    ← Long-polling specific Job ID stats   
+│   ├── search.html, .js    ← Search UI over global queries
+│   └── style.css           ← CSS Variables and animations
 │
 ├── crawler/
 │   ├── __init__.py
@@ -402,7 +385,7 @@ WebCrawler/
 │   ├── coordinator.py      ← Config, WorkItem, CrawlStats, VisitedSet, Coordinator
 │   ├── worker.py           ← run_worker() — urllib.request + html.HTMLParser
 │   ├── search.py           ← ResultTriple dataclass + SearchEngine
-│   ├── dashboard.py        ← Dashboard — terminal UI refresh + stdin listener
+│   ├── web.py              ← BaseHTTPRequestHandler + Global JobManager mapping
 │   └── persistence.py      ← JSONL append/load (threading.Lock-protected)
 │
 └── tests/
