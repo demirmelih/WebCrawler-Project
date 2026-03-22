@@ -86,19 +86,11 @@ class CrawlerAPIHandler(BaseHTTPRequestHandler):
             q = job["coordinator"].queue_ref() if job["coordinator"] else None
             queue_size = q.qsize() if q else 0
 
-            # Dynamic logs generation comparing against last known stats
-            current_processed = stats.get("processed", 0)
-            last_processed = job.get("_last_processed", 0)
-            
-            if current_processed > last_processed:
-                job["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] Processed {current_processed - last_processed} new pages (Total: {current_processed})")
-                job["_last_processed"] = current_processed
-                
-            cur_errors = stats.get("errors", 0)
-            last_errors = job.get("_last_errors", 0)
-            if cur_errors > last_errors:
-                job["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR: {cur_errors - last_errors} new fetch/parse errors occurred.")
-                job["_last_errors"] = cur_errors
+            # Drain new live logs from worker states
+            if job["coordinator"]:
+                live_logs = job["coordinator"].stats().get_and_clear_logs()
+                for log_msg in live_logs:
+                    job["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] {log_msg}")
 
             new_logs = job["logs"][last_log_idx:]
 
@@ -128,6 +120,7 @@ class CrawlerAPIHandler(BaseHTTPRequestHandler):
                 title = record.title if record else "Untitled"
                 out.append({
                     "url": r.url,
+                    "origin": record.origin_url if record else "",
                     "title": title,
                     "depth": r.depth,
                     "score": r.score

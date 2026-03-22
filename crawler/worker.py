@@ -141,12 +141,15 @@ def run_worker(
     stop_event: threading.Event,
 ) -> None:
     """Endless loop that fetches URLs and parses them until shutdown."""
+    worker_id = threading.current_thread().name
     while not stop_event.is_set():
+        stats.update_worker(worker_id, "Idle", "")
         try:
             item = work_q.get(timeout=1.0)
         except queue.Empty:
             continue
 
+        stats.update_worker(worker_id, "Fetching", item.url)
         stats.increment_active()
         try:
             # 1. Rate Limit
@@ -188,6 +191,7 @@ def run_worker(
             ))
 
             stats.increment_processed()
+            stats.add_log(f"[FETCHED] {item.url} [{item.depth}]")
 
             # 5. Enqueue Discovered Links
             if item.depth + 1 <= cfg.max_depth:
@@ -213,13 +217,16 @@ def run_worker(
                             work_q.put(new_item, block=True, timeout=5.0)
                         except queue.Full:
                             logger.warning("Queue full, dropping link %s", abs_url)
+                            stats.add_log(f"[THROTTLED/QUEUE FULL] Dropping link {abs_url}")
 
         except (urllib.error.URLError, urllib.error.HTTPError) as e:
             stats.increment_errors()
             logger.warning("Failed fetch %s: %s", item.url, e)
+            stats.add_log(f"[ERROR] Failed fetch {item.url}: {e}")
         except Exception as e:
             stats.increment_errors()
             logger.warning("Failed to process %s: %s", item.url, e)
+            stats.add_log(f"[ERROR] Failed to process {item.url}: {e}")
         finally:
             stats.decrement_active()
             work_q.task_done()

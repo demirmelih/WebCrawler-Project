@@ -120,6 +120,8 @@ class CrawlStats:
         self._errors:       int  = 0
         self._active:       int  = 0   # workers currently fetching a page
         self._queue_cap:    int  = 0   # set by Coordinator after queue creation
+        self._worker_states: dict[str, dict] = {}
+        self._recent_logs:  list[str] = []
 
     # ------------------------------------------------------------------
     # Mutators (called from worker threads)
@@ -145,6 +147,22 @@ class CrawlStats:
         with self._lock:
             self._queue_cap = cap
 
+    def update_worker(self, worker_id: str, status: str, url: str) -> None:
+        with self._lock:
+            self._worker_states[worker_id] = {"status": status, "url": url}
+
+    def add_log(self, msg: str) -> None:
+        with self._lock:
+            if len(self._recent_logs) >= 500:
+                self._recent_logs.pop(0)
+            self._recent_logs.append(msg)
+
+    def get_and_clear_logs(self) -> list[str]:
+        with self._lock:
+            logs = self._recent_logs[:]
+            self._recent_logs.clear()
+            return logs
+
     # ------------------------------------------------------------------
     # Accessor (called from Dashboard thread)
     # ------------------------------------------------------------------
@@ -160,6 +178,7 @@ class CrawlStats:
                 "errors":      self._errors,
                 "active":      self._active,
                 "queue_cap":   self._queue_cap,
+                "worker_states": self._worker_states.copy(),
             }
 
     def __repr__(self) -> str:  # pragma: no cover

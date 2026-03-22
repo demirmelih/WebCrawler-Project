@@ -76,6 +76,42 @@ document.addEventListener('DOMContentLoaded', () => {
             
             UI.workers.textContent = `${stats.active} / ${data.cfg.workers}`;
 
+            // Render Worker Pool
+            if (stats.worker_states) {
+                const workerGrid = document.getElementById('worker-pool-grid');
+                if (workerGrid) {
+                    workerGrid.innerHTML = '';
+                    Object.keys(stats.worker_states).sort().forEach(wId => {
+                        const state = stats.worker_states[wId];
+                        const isFetching = state.status === 'Fetching';
+                        
+                        const card = document.createElement('div');
+                        card.className = 'worker-card';
+                        
+                        const header = document.createElement('div');
+                        header.className = 'worker-card-header';
+                        
+                        const idSpan = document.createElement('span');
+                        idSpan.textContent = wId;
+                        
+                        const statusSpan = document.createElement('span');
+                        statusSpan.textContent = state.status;
+                        statusSpan.className = isFetching ? 'worker-status-fetching' : 'worker-status-idle';
+                        
+                        header.appendChild(idSpan);
+                        header.appendChild(statusSpan);
+                        
+                        const urlDiv = document.createElement('div');
+                        urlDiv.className = 'worker-card-url';
+                        urlDiv.textContent = state.url || '-';
+                        
+                        card.appendChild(header);
+                        card.appendChild(urlDiv);
+                        workerGrid.appendChild(card);
+                    });
+                }
+            }
+
             // Update Badge & Stop Button
             UI.statusBadge.textContent = data.status;
             UI.statusBadge.className = `status-badge ${data.status}`;
@@ -146,6 +182,55 @@ document.addEventListener('DOMContentLoaded', () => {
         return str.replace(/[&<>'"]/g, 
             tag => ({'&': '&amp;','<': '&lt;','>': '&gt;',"'": '&#39;','"': '&quot;'}[tag])
         );
+    }
+
+    // Live Search Binding
+    const searchInput = document.getElementById('live-search-input');
+    const searchResults = document.getElementById('live-search-results');
+    let searchTimeout = null;
+
+    if (searchInput && searchResults) {
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(searchTimeout);
+            const q = e.target.value.trim();
+            if (!q) {
+                searchResults.innerHTML = '<div class="text-muted" style="font-style: italic; font-size: 0.875rem;">Type to search the index...</div>';
+                return;
+            }
+            searchTimeout = setTimeout(async () => {
+                try {
+                    const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+                    const data = await res.json();
+                    
+                    if (!data.results || data.results.length === 0) {
+                        searchResults.innerHTML = '<div class="text-muted" style="font-size: 0.875rem;">No results found.</div>';
+                        return;
+                    }
+
+                    searchResults.innerHTML = `
+                    <table style="width: 100%; text-align: left; border-collapse: collapse; font-size: 0.875rem;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid var(--border-color); color: var(--text-muted);">
+                                <th style="padding: 0.5rem;">Relevant URL</th>
+                                <th style="padding: 0.5rem;">Origin URL</th>
+                                <th style="padding: 0.5rem;">Depth (Score)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.results.map(r => `
+                                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                    <td style="padding: 0.5rem; color: var(--success); word-break: break-all;">${escapeHTML(r.url)}</td>
+                                    <td style="padding: 0.5rem; word-break: break-all; color: var(--text-muted);">${escapeHTML(r.origin || '-')}</td>
+                                    <td style="padding: 0.5rem;">${r.depth} <span style="opacity:0.5">(${r.score})</span></td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>`;
+                } catch(err) {
+                    console.error("Search error", err);
+                }
+            }, 300); // 300ms debounce
+        });
     }
 
     // Start polling chain

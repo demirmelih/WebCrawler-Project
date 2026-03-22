@@ -14,14 +14,14 @@
 * {
     box-sizing: border-box;
     margin: 0;
-    padding: 0;
+    padding: 5px;
     font-family: 'Inter', -apple-system, sans-serif;
 }
 
 body {
     background-color: var(--bg-dark);
     background-image: radial-gradient(circle at 15% 50%, rgba(59, 130, 246, 0.15), transparent 25%),
-                      radial-gradient(circle at 85% 30%, rgba(139, 92, 246, 0.15), transparent 25%);
+        radial-gradient(circle at 85% 30%, rgba(139, 92, 246, 0.15), transparent 25%);
     background-attachment: fixed;
     color: var(--text-main);
     min-height: 100vh;
@@ -94,7 +94,8 @@ label {
     color: var(--text-muted);
 }
 
-input, textarea {
+input,
+textarea {
     background: rgba(15, 23, 42, 0.5);
     border: 1px solid var(--border-color);
     border-radius: 8px;
@@ -104,7 +105,8 @@ input, textarea {
     transition: all 0.2s ease;
 }
 
-input:focus, textarea:focus {
+input:focus,
+textarea:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 2px var(--accent-glow);
@@ -196,15 +198,37 @@ textarea {
 }
 
 @keyframes pulse {
-    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-    70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
-    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    }
+
+    70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+    }
+
+    100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    }
 }
 
 @keyframes pulse-orange {
-    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
-    70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(245, 158, 11, 0); }
-    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+    0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+    }
+
+    70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 10px rgba(245, 158, 11, 0);
+    }
+
+    100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+    }
 }
 
 /* Main Content */
@@ -269,7 +293,57 @@ textarea {
 }
 
 .progress-fill.throttled {
-    background: #f59e0b;
+    background: var(--danger);
+    box-shadow: 0 0 8px var(--danger);
+}
+
+/* Worker Pool */
+.worker-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+}
+
+.worker-card {
+    padding: 1rem;
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.5);
+    border: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    transition: transform 0.2s ease;
+}
+
+.worker-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--accent);
+}
+
+.worker-card-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+.worker-card-url {
+    font-size: 0.8rem;
+    word-break: break-all;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--accent);
+}
+
+.worker-status-fetching {
+    color: var(--success);
+}
+
+.worker-status-idle {
+    color: var(--text-muted);
 }
 
 /* Search */
@@ -312,10 +386,12 @@ textarea {
 .results-container::-webkit-scrollbar {
     width: 8px;
 }
+
 .results-container::-webkit-scrollbar-track {
     background: rgba(255, 255, 255, 0.05);
     border-radius: 4px;
 }
+
 .results-container::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.2);
     border-radius: 4px;
@@ -375,8 +451,14 @@ textarea {
     justify-content: space-between;
     align-items: center;
 }
-.mb-4 { margin-bottom: 1.5rem; }
-.mt-4 { margin-top: 1.5rem; }
+
+.mb-4 {
+    margin-bottom: 1.5rem;
+}
+
+.mt-4 {
+    margin-top: 1.5rem;
+}
 
 /* Top Navigation Bar */
 .topnav {
@@ -389,10 +471,12 @@ textarea {
     border-top: none;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
 }
+
 .nav-links {
     display: flex;
     gap: 2.5rem;
 }
+
 .nav-links a {
     color: var(--text-muted);
     text-decoration: none;
@@ -401,9 +485,12 @@ textarea {
     padding-bottom: 0.35rem;
     border-bottom: 2px solid transparent;
 }
-.nav-links a:hover, .nav-links a.active {
+
+.nav-links a:hover,
+.nav-links a.active {
     color: var(--text-main);
 }
+
 .nav-links a.active {
     border-bottom: 2px solid var(--accent);
 }
@@ -416,6 +503,7 @@ textarea {
     overflow: hidden;
     box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.5);
 }
+
 .terminal-header {
     background: #1e293b;
     padding: 0.75rem 1.25rem;
@@ -423,22 +511,26 @@ textarea {
     align-items: center;
     border-bottom: 1px solid var(--border-color);
 }
+
 .traffic-lights {
     display: flex;
     gap: 0.5rem;
     margin-right: 1.5rem;
 }
+
 .traffic-lights span {
     width: 12px;
     height: 12px;
     border-radius: 50%;
 }
+
 .terminal-title {
     color: var(--text-muted);
     font-size: 0.85rem;
     font-family: 'Consolas', monospace;
     letter-spacing: 0.05em;
 }
+
 .terminal-body {
     padding: 1.25rem;
     font-family: 'Consolas', 'Monaco', monospace;
@@ -451,11 +543,18 @@ textarea {
     gap: 0.35rem;
     line-height: 1.5;
 }
+
 .log-line {
     word-break: break-all;
 }
-.log-line.error { color: #fca5a5; }
-.log-line.warn { color: #fcd34d; }
+
+.log-line.error {
+    color: #fca5a5;
+}
+
+.log-line.warn {
+    color: #fcd34d;
+}
 
 /* Jobs List */
 .job-row {
@@ -466,12 +565,15 @@ textarea {
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     transition: background 0.2s;
 }
+
 .job-row:last-child {
     border-bottom: none;
 }
+
 .job-row:hover {
     background: rgba(255, 255, 255, 0.02);
 }
+
 .status-badge {
     padding: 0.25rem 0.75rem;
     border-radius: 9999px;
@@ -479,6 +581,18 @@ textarea {
     font-weight: 600;
     text-transform: uppercase;
 }
-.status-badge.running { background: rgba(16, 185, 129, 0.2); color: #34d399; }
-.status-badge.completed { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
-.status-badge.interrupted { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+.status-badge.running {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+}
+
+.status-badge.completed {
+    background: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
+}
+
+.status-badge.interrupted {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+}
