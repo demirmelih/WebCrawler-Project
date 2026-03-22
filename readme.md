@@ -22,6 +22,9 @@ python web_main.py --port 8080
 ```
 Open your browser to `http://localhost:8080` to launch jobs and query the database.
 
+> [!NOTE]
+> The Web Dashboard operates entirely **in-memory** for maximum speed. It streams logs and search indices directly to the UI and does *not* write to `crawler.log` or `index.jsonl` files on disk.
+
 ### 2. Standalone CLI Worker
 
 If you prefer headless command-line operation:
