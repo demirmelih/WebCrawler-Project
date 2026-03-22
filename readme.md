@@ -32,6 +32,7 @@ python main.py --seed "https://example.com" --depth 2 --workers 10 --queue-cap 5
 *Press `Ctrl+C` to cleanly pause/interrupt the crawl and shut down threads.*
 
 ## File Architecture
+* `docs/`: Product requirements, system design, and production deployment recommendations.
 * `crawler/coordinator.py`: Master node managing work queue, configuration, and worker thread lifecycle.
 * `crawler/worker.py`: Daemon crawler threads running the HTTP I/O and HTML parsing loop.
 * `crawler/search.py`: The live query layer performing relevance scoring (`2×title_hits + 1×body_hits`).
