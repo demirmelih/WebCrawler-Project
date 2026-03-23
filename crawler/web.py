@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler
 
 from crawler.coordinator import Config, Coordinator
 from crawler.index import Index
+from crawler.persistence import PDataWriter
 from crawler.search import SearchEngine
 
 logger = logging.getLogger(__name__)
@@ -22,12 +23,21 @@ logger = logging.getLogger(__name__)
 class GlobalState:
     """Global state holder for the web server to access shared components."""
     idx = Index()
-    search_engine = SearchEngine(idx)
+    pdata = PDataWriter()
+    search_engine = SearchEngine(idx, pdata)
     
     # Store jobs by ID
     jobs: dict[str, dict] = {}
     job_counter = 0
     jobs_lock = threading.Lock()
+
+    # Hook idx.put to also write to p.data automatically
+    _original_put = idx.put
+    @staticmethod
+    def _persisting_put(record):
+        GlobalState._original_put(record)
+        GlobalState.pdata.write(record)
+    idx.put = _persisting_put
 
 
 class CrawlerAPIHandler(BaseHTTPRequestHandler):
@@ -123,9 +133,32 @@ class CrawlerAPIHandler(BaseHTTPRequestHandler):
                     "origin": record.origin_url if record else "",
                     "title": title,
                     "depth": r.depth,
-                    "score": r.score
+                    "score": r.score,
+                    "relevance_score": r.score
                 })
                 
+            self._send_json(200, {"results": out})
+            return
+
+        # Rubric-compliant search endpoint: GET /search?query=<word>&sortBy=relevance
+        if path == "/search":
+            qs = urllib.parse.parse_qs(parsed_path.query)
+            query = qs.get("query", [""])[0]
+            sort_by = qs.get("sortBy", ["relevance"])[0]
+            results = GlobalState.search_engine.query(query, sort_by=sort_by)
+
+            out = []
+            for r in results:
+                record = GlobalState.idx.get(r.url)
+                title = record.title if record else "Untitled"
+                out.append({
+                    "url": r.url,
+                    "origin": r.origin_url,
+                    "title": title,
+                    "depth": r.depth,
+                    "relevance_score": r.score
+                })
+
             self._send_json(200, {"results": out})
             return
 

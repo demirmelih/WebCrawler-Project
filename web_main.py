@@ -22,7 +22,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Web Crawler UI Server")
-    parser.add_argument("--port", type=int, default=8080, help="Port to run the web UI on")
+    parser.add_argument("--port", type=int, default=3600, help="Port to run the web UI on")
     args = parser.parse_args()
 
     # Launch server

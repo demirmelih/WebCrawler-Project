@@ -1,21 +1,17 @@
 """
 crawler/search.py
 =================
-Search engine — provides term-frequency (TF) scoring over the indexed pages.
-
-Role in the system
-------------------
-The Dashboard calls query() when the user enters a search term.
-The SearchEngine reads a safe snapshot of the Index (via idx.all()) so it
-never blocks the crawler threads from writing new pages. It then scores
-all pages, sorts them, and returns the top N results.
+Search engine — provides frequency-based scoring over the indexed pages.
 
 Scoring Algorithm
 -----------------
-Tokens are extracted by repeatedly splitting on whitespace and lowercasing.
-  score = (2 * title_hits) + body_hits
-Results are sorted descending by score, and then ascending by depth
-to prefer pages closer to the seed on a tie.
+For each word in the query, we look up matching entries from data/storage/p.data.
+Each entry contains (word, url, origin, depth, frequency).
+
+   score = (frequency × 10) + 1000 (exact match bonus) - (depth × 5)
+
+Results are sorted descending by score. If multiple entries exist for the same
+URL (from different query words), we take the highest individual score for that URL.
 """
 
 from __future__ import annotations
@@ -25,6 +21,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from crawler.index import Index
+    from crawler.persistence import PDataWriter
 
 
 @dataclass
@@ -42,16 +39,19 @@ class SearchEngine:
     Parameters
     ----------
     idx : Index
-        The shared document store. The engine will call idx.all()
-        to operate on an independent memory snapshot, ensuring zero
-        contention with the active crawler threads.
+        The shared document store.
+    pdata : PDataWriter | None
+        Optional PDataWriter for frequency-based scoring from p.data.
     """
 
-    def __init__(self, idx: "Index") -> None:
+    def __init__(self, idx: "Index", pdata: "PDataWriter | None" = None) -> None:
         self._idx = idx
+        self._pdata = pdata
 
-    def query(self, query_str: str, limit: int = 20) -> list[ResultTriple]:
-        """Score all pages in the index against the given query string.
+    def query(self, query_str: str, limit: int = 20, sort_by: str = "relevance") -> list[ResultTriple]:
+        """Score pages against the query using the frequency-based formula.
+
+        Formula: score = (frequency × 10) + 1000 - (depth × 5)
 
         Parameters
         ----------
@@ -59,6 +59,8 @@ class SearchEngine:
             Space-delimited search keywords.
         limit : int, optional
             Maximum number of results to return (default 20).
+        sort_by : str, optional
+            Sorting strategy. Currently only 'relevance' (default).
 
         Returns
         -------
@@ -69,10 +71,44 @@ class SearchEngine:
             return []
 
         tokens = query_str.lower().split()
-        if not tokens:  # pragma: no cover
+        if not tokens:
             return []
 
-        # Operating on a point-in-time snapshot so we don't lock the index
+        # Strategy: use p.data file if available for frequency-based scoring
+        if self._pdata:
+            return self._query_pdata(tokens, limit)
+
+        # Fallback: in-memory scan (legacy mode)
+        return self._query_inmemory(tokens, limit)
+
+    def _query_pdata(self, tokens: list[str], limit: int) -> list[ResultTriple]:
+        """Score using the p.data word-frequency file.
+
+        Formula: score = (frequency × 10) + 1000 - (depth × 5)
+        """
+        # For each URL, track the best score and metadata
+        best: dict[str, ResultTriple] = {}
+
+        for token in tokens:
+            entries = self._pdata.load_word_entries(token)
+            for entry in entries:
+                score = (entry["frequency"] * 10) + 1000 - (entry["depth"] * 5)
+
+                url = entry["url"]
+                if url not in best or score > best[url].score:
+                    best[url] = ResultTriple(
+                        url=url,
+                        origin_url=entry["origin"],
+                        depth=entry["depth"],
+                        score=score,
+                    )
+
+        results = list(best.values())
+        results.sort(key=lambda r: (-r.score, r.depth))
+        return results[:limit]
+
+    def _query_inmemory(self, tokens: list[str], limit: int) -> list[ResultTriple]:
+        """Fallback: scan the in-memory index when p.data is unavailable."""
         records = self._idx.all()
         if not records:
             return []
@@ -81,11 +117,10 @@ class SearchEngine:
 
         for record in records:
             title_lower = record.title.lower()
-            text_lower  = record.text.lower()
+            text_lower = record.text.lower()
 
             title_hits = sum(1 for t in tokens if t in title_lower)
-            body_hits  = sum(1 for t in tokens if t in text_lower)
-
+            body_hits = sum(1 for t in tokens if t in text_lower)
             score = (2 * title_hits) + body_hits
 
             if score > 0:
@@ -93,10 +128,8 @@ class SearchEngine:
                     url=record.url,
                     origin_url=record.origin_url,
                     depth=record.depth,
-                    score=score
+                    score=score,
                 ))
 
-        # Sort: Highest score first (-r.score), then shortest depth first (r.depth)
         results.sort(key=lambda r: (-r.score, r.depth))
-
         return results[:limit]

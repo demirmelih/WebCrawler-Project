@@ -15,15 +15,15 @@ A native Python (stdlib-only) concurrent web crawler and real-time search engine
 
 ### 1. Web Dashboard (Recommended)
 
-Starts the native HTTP server exposing the Multi-Page Application on port 8080:
+Starts the native HTTP server exposing the Multi-Page Application on port 3600:
 
 ```bash
-python web_main.py --port 8080
+python web_main.py --port 3600
 ```
-Open your browser to `http://localhost:8080` to launch jobs and query the database.
+Open your browser to `http://localhost:3600` to launch jobs and query the database.
 
 > [!NOTE]
-> The Web Dashboard operates entirely **in-memory** for maximum speed. It streams logs and search indices directly to the UI and does *not* write to `crawler.log` or `index.jsonl` files on disk.
+> The Web Dashboard streams logs directly to the browser UI and does *not* write `crawler.log`. However, it **does** persist a word-frequency index to `data/storage/p.data` on every page crawl for the search API.
 
 ### 2. Standalone CLI Worker
 

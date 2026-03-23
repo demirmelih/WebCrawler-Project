@@ -1,188 +1,118 @@
 """
 crawler/persistence.py
 ======================
-Optional JSONL-based save/resume layer for the Web Crawler.
+Persistence layer — writes crawled page data to disk in two formats:
 
-Role in the system
-------------------
-Persistence gives the crawler a "memory" between runs. When --persist is
-passed on the CLI, every PageRecord written to the Index is also appended
-to `index.jsonl` on disk. On the next startup, load_all() reads that file,
-re-populates the Index and the VisitedSet, and the crawl resumes from where
-it left off — skipping all pages already indexed.
+1. `data/storage/p.data`  — Word-frequency index (one line per word per page).
+   Format: word url origin depth frequency
 
-  Worker thread ──► idx.put(record)
-                         └──► persistence.append(record) ──► index.jsonl
+2. `index.jsonl`          — Full PageRecord archive (optional, CLI-only).
 
-  Next startup:
-  persistence.load_all() ──► list[PageRecord] ──► re-fill idx + visited set
-
-File format: Newline-Delimited JSON (JSONL / JSON Lines)
---------------------------------------------------------
-Each line in index.jsonl is one complete JSON object:
-
-  {"url": "https://example.com", "origin_url": "", "depth": 0,
-   "title": "Example", "text": "Example Domain",
-   "indexed_at": "2026-03-18T10:00:00+00:00"}
-
-  * Append-only — safe across crashes (partial lines at EOF are skipped).
-  * Human-readable — easy to inspect or grep.
-  * Stream-parseable — load_all() reads line-by-line, never loading the
-    whole file into memory at once.
-
-Thread safety
+Thread Safety
 -------------
-A single threading.Lock (_lock) guards both append() and load_all().
-This lock is completely separate from the Index lock, so a worker calling
-append() never contends with another worker calling idx.put().
-
-Constraints (from .antigravity PROMPT_PERSISTENCE)
---------------------------------------------------
-  * ONLY stdlib: json, threading, pathlib, dataclasses, datetime.
-  * Use dataclasses.asdict() for serialisation.
-  * deserialise indexed_at as ISO string → datetime.fromisoformat().
-  * load_all() on missing file → return [] (not an error).
-  * Malformed lines → log warning and skip (don't crash).
+All file writes are protected by threading.Lock to prevent interleaved lines
+from concurrent worker threads.
 """
 
 from __future__ import annotations
 
-import json
-import logging
+import os
+import re
 import threading
-from dataclasses import asdict
-from datetime import datetime
+from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING
 
-from crawler.index import PageRecord
+if TYPE_CHECKING:
+    from crawler.index import PageRecord
 
-logger = logging.getLogger(__name__)
+# ---------------------------------------------------------------------------
+# Word tokenizer — stdlib only, no NLTK / spaCy
+# ---------------------------------------------------------------------------
 
-# Default file written next to wherever the process runs.
-DEFAULT_PATH = "index.jsonl"
+_WORD_RE = re.compile(r"[a-z0-9]+")
 
 
-class Persistence:
-    """Append-only JSONL persistence layer for PageRecord objects.
+def tokenize(text: str) -> list[str]:
+    """Extract lowercase alphanumeric tokens from text."""
+    return _WORD_RE.findall(text.lower())
 
-    Parameters
-    ----------
-    filepath : str | Path
-        Path to the JSONL file. Defaults to "index.jsonl" in the CWD.
-        The file (and any parent directories) will be created on first
-        append if they don't exist.
 
-    Usage
-    -----
-    # Setup (once, in main.py):
-    store = Persistence("index.jsonl")
+# ---------------------------------------------------------------------------
+# PDataWriter — writes word-frequency tuples to data/storage/p.data
+# ---------------------------------------------------------------------------
 
-    # During crawl — called inside run_worker() after each successful page:
-    store.append(record)
+class PDataWriter:
+    """Append-only writer for the word-frequency index file.
 
-    # On startup with --persist flag — called before coordinator.start():
-    for record in store.load_all():
-        idx.put(record)
-        visited.try_mark(record.url)
+    Each call to write() tokenizes the page's title + body text, counts
+    word frequencies, and appends one line per unique word:
+
+        word url origin depth frequency
+
+    The file is created (along with parent directories) on first write.
+    All operations are guarded by a threading.Lock.
     """
 
-    def __init__(self, filepath: str | Path = DEFAULT_PATH) -> None:
+    def __init__(self, filepath: str = "data/storage/p.data") -> None:
         self._path = Path(filepath)
         self._lock = threading.Lock()
-
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
-
-    def append(self, record: PageRecord) -> None:
-        """Serialise *record* as one JSON line and append to the file.
-
-        Opens the file in append mode, writes exactly one line, then closes
-        immediately. This means:
-          * Each successful call is crash-safe — a crash between two calls
-            leaves a complete line on disk.
-          * Concurrent threads each append their own line atomically inside
-            the lock; no two threads interleave their writes.
-
-        Parameters
-        ----------
-        record : PageRecord
-            The page to persist.
-
-        Raises
-        ------
-        OSError
-            If the file cannot be opened or written (e.g. permission error).
-            Let this propagate — the caller (worker) should log and continue.
-        """
-        # Ensure parent directories exist (e.g. if filepath = "data/index.jsonl")
+        # Ensure parent directory exists
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
+    def write(self, record: "PageRecord") -> None:
+        """Tokenize a PageRecord and append word-frequency lines to p.data."""
+        # Combine title and body for frequency counting
+        combined_text = f"{record.title} {record.text}"
+        tokens = tokenize(combined_text)
+
+        if not tokens:
+            return
+
+        freq_map: Counter = Counter(tokens)
+        origin = record.origin_url if record.origin_url else ""
+
+        lines: list[str] = []
+        for word, count in freq_map.items():
+            # Format: word url origin depth frequency
+            lines.append(f"{word} {record.url} {origin} {record.depth} {count}\n")
+
         with self._lock:
-            with self._path.open("a", encoding="utf-8") as fh:
-                # asdict() converts the dataclass to a plain dict.
-                # default=str handles datetime → ISO-8601 string automatically.
-                fh.write(json.dumps(asdict(record), default=str) + "\n")
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.writelines(lines)
 
-    # ------------------------------------------------------------------
-    # Read
-    # ------------------------------------------------------------------
+    def load_word_entries(self, query_word: str) -> list[dict]:
+        """Read p.data and return all entries matching the given word.
 
-    def load_all(self) -> list[PageRecord]:
-        """Read and deserialise every PageRecord from the JSONL file.
-
-        Returns
-        -------
-        list[PageRecord]
-            All records found in the file, in file order.
-            Returns an empty list (not an error) if the file does not exist.
-            Malformed or unreadable lines are skipped with a warning log.
-
-        Notes
-        -----
-        Reads the file line by line — never loads the entire content into
-        memory. Safe for arbitrarily large index files.
+        Returns a list of dicts: {word, url, origin, depth, frequency}.
         """
-        if not self._path.exists():
-            logger.debug("Persistence file %s not found — starting fresh.", self._path)
+        query_word = query_word.lower().strip()
+        if not query_word or not self._path.exists():
             return []
 
-        records: list[PageRecord] = []
-
+        results: list[dict] = []
         with self._lock:
-            with self._path.open("r", encoding="utf-8") as fh:
-                for line_no, raw in enumerate(fh, start=1):
-                    raw = raw.strip()
-                    if not raw:         # skip blank lines
+            with open(self._path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split(" ", 4)
+                    if len(parts) < 5:
                         continue
-                    try:
-                        data = json.loads(raw)
-                        # Restore datetime from ISO-8601 string produced by
-                        # json.dumps(..., default=str).
-                        data["indexed_at"] = datetime.fromisoformat(
-                            data["indexed_at"]
-                        )
-                        records.append(PageRecord(**data))
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-                        logger.warning(
-                            "Skipping malformed line %d in %s: %s",
-                            line_no,
-                            self._path,
-                            exc,
-                        )
+                    word, url, origin, depth_str, freq_str = parts
+                    if word == query_word:
+                        try:
+                            results.append({
+                                "word": word,
+                                "url": url,
+                                "origin": origin,
+                                "depth": int(depth_str),
+                                "frequency": int(freq_str),
+                            })
+                        except ValueError:
+                            continue
+        return results
 
-        logger.info("Loaded %d records from %s.", len(records), self._path)
-        return records
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @property
-    def path(self) -> Path:
-        """The resolved path of the JSONL file (read-only)."""
-        return self._path
-
-    def __repr__(self) -> str:  # pragma: no cover
-        return f"Persistence(path={self._path!r})"
+    def clear(self) -> None:
+        """Remove the p.data file (useful for fresh crawls)."""
+        with self._lock:
+            if self._path.exists():
+                self._path.unlink()
